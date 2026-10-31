@@ -1,0 +1,16 @@
+import express from 'express';
+import mysql from 'mysql2/promise';
+import cors from 'cors';
+const app=express(); app.use(cors()); app.use(express.json());
+const pool=mysql.createPool({host:process.env.DB_HOST||'localhost',user:process.env.DB_USER||'aviation',password:process.env.DB_PASSWORD||'aviation_dev',database:process.env.DB_NAME||'aviation',waitForConnections:true,connectionLimit:10});
+const route=(fn)=>async(req,res)=>{try{await fn(req,res)}catch(e){console.error(e);res.status(500).json({error:'Database or server error'})}};
+app.get('/api/health',route(async(req,res)=>{await pool.query('SELECT 1');res.json({status:'ok'})}));
+app.get('/api/aircraft',route(async(req,res)=>{const [rows]=await pool.query('SELECT * FROM aircraft ORDER BY id DESC');res.json(rows)}));
+app.post('/api/aircraft',route(async(req,res)=>{const {registration,model}=req.body;if(!registration||!model)return res.status(400).json({error:'Registration and model required'});const [r]=await pool.query('INSERT INTO aircraft (registration,model) VALUES (?,?)',[registration,model]);res.status(201).json({id:r.insertId,registration,model})}));
+app.get('/api/tasks',route(async(req,res)=>{const [rows]=await pool.query('SELECT t.*,a.registration FROM maintenance_tasks t JOIN aircraft a ON a.id=t.aircraft_id ORDER BY t.due_date,t.id');res.json(rows)}));
+app.post('/api/tasks',route(async(req,res)=>{const {aircraft_id,title,due_date}=req.body;if(!Number.isInteger(Number(aircraft_id))||!title||!/^\d{4}-\d{2}-\d{2}$/.test(due_date||''))return res.status(400).json({error:'Aircraft, title and YYYY-MM-DD due date required'});const [r]=await pool.query('INSERT INTO maintenance_tasks (aircraft_id,title,due_date) VALUES (?,?,?)',[aircraft_id,title,due_date]);res.status(201).json({id:r.insertId})}));
+app.patch('/api/tasks/:id',route(async(req,res)=>{if(!['OPEN','IN_PROGRESS','COMPLETED'].includes(req.body.status))return res.status(400).json({error:'Invalid status'});const [r]=await pool.query('UPDATE maintenance_tasks SET status=? WHERE id=?',[req.body.status,req.params.id]);if(!r.affectedRows)return res.status(404).json({error:'Task not found'});res.json({updated:true})}));
+app.get('/api/inspections',route(async(req,res)=>{const [rows]=await pool.query('SELECT i.*,a.registration FROM inspections i JOIN aircraft a ON a.id=i.aircraft_id ORDER BY i.id DESC');res.json(rows)}));
+app.post('/api/inspections',route(async(req,res)=>{const {aircraft_id,result,notes}=req.body;if(!['PASS','FAIL'].includes(result)||!aircraft_id)return res.status(400).json({error:'Aircraft and PASS/FAIL required'});const [r]=await pool.query('INSERT INTO inspections (aircraft_id,result,notes) VALUES (?,?,?)',[aircraft_id,result,(notes||'').slice(0,1000)]);res.status(201).json({id:r.insertId})}));
+app.get('/api/alerts',route(async(req,res)=>{const [rows]=await pool.query("SELECT t.id,t.title,t.due_date,a.registration FROM maintenance_tasks t JOIN aircraft a ON a.id=t.aircraft_id WHERE t.status <> 'COMPLETED' AND t.due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY) ORDER BY t.due_date");res.json(rows)}));
+app.listen(process.env.PORT||3001,'0.0.0.0',()=>console.log('API ready on port 3001'));
